@@ -15,6 +15,8 @@ class DataSet_MatrixFlt;
 class DataSet_GridFlt;
 class DataSet_GridDbl;
 
+
+
 /// Class for applying Grid Inhomogenous Solvation Theory
 /** \author Daniel R. Roe
   */
@@ -32,10 +34,13 @@ class Action_GIST : public Action {
     Action::RetType DoAction(int, ActionFrame&);
     void Print();
 
+    class Site; /// Potential hydrogen bond site. Can be either donor or donor/acceptor.
+
     typedef std::vector<float> Farray;
     typedef std::vector<int> Iarray;
     typedef std::vector<Farray> Xarray;
     typedef std::vector<double> Darray;
+    typedef std::vector<Site> Sarray;
 
     inline void TransEntropy(float,float,float,float,float,float,float,int,double&,double&) const;
     static inline void Ecalc(double, double, double, NonbondType const&, double&, double&);
@@ -47,6 +52,21 @@ class Action_GIST : public Action {
     void CalcAvgVoxelEnergy(double, DataSet_GridFlt&, DataSet_GridFlt&, Farray&, Farray&,
                             DataSet_GridDbl&, DataSet_GridFlt&, Farray&);
 
+    
+    /// functuion for hbond analysis-------
+    inline double Angle(const double*, const double*, const double*, Box const&) const;
+    bool EvalAngle(Site const&,const double*,int,const double*,
+                        Frame const&); // return ture if the distance and angle criteria of hbond is met,
+    void Hbond(Frame const&); // hbond calcution to update the voxel-wise hbond data
+    // IsFON()
+        /** Default criterion for being a hydrogen bond donor/acceptor. */
+    inline bool IsFON(Atom const& atm) {
+        return (atm.Element() == Atom::FLUORINE ||
+        atm.Element() == Atom::OXYGEN ||
+        atm.Element() == Atom::NITROGEN);
+        }
+    //-----------------------------------------
+    
     int debug_;      ///< Action debug level
     int numthreads_; ///< Number of OpenMP threads
 #ifdef CUDA
@@ -121,6 +141,12 @@ class Action_GIST : public Action {
     DataSet_3D* U_PME_;         ///< The PME nonbond energy for solute atoms
     // GIST matrix datasets
     DataSet_MatrixFlt* ww_Eij_; ///< Water-water interaction energy matrix.*
+    
+    // hbond grid dataset
+    DataSet_3D* sw_Don_; //-> For each voxel, number of solute-water hydrogen bond, in which water in this voxel acts as donor
+    DataSet_3D* sw_Acc_; //-> For each voxel, number of solute-water hydrogen bond, in which water in this voxel acts as acceptor
+    DataSet_3D* ww_Don_; //-> For each voxel, number of water-water hydrogen bond, in which water in this voxel acts as donor 
+    DataSet_3D* ww_Acc_; //-> For each voxel, number of water-water hydrogen bond, in which water in this voxel acts as acceptor
 
     //Iarray mol_nums_;     ///< Absolute molecule number of each solvent molecule.+ //TODO needed?
     Iarray O_idxs_;         ///< Oxygen atom indices for each solvent molecule.+
@@ -152,6 +178,31 @@ class Action_GIST : public Action {
     std::vector<Darray> E_UV_Elec_; ///< Solute-solvent electrostatic energy for each voxel.*
     std::vector<Darray> E_VV_VDW_;  ///< Solvent-solvent van der Waals energy for each voxel.*
     std::vector<Darray> E_VV_Elec_; ///< Solvent-solvent electrostatic energy for each voxel.*
+
+    //Add for hydrogen bond analysis-------
+    Darray Nsw_don_; ///< Number of solute-water hbond, in which water acts as donor.*
+    Darray Nsw_acc_; ///< Number of solute-water hbond, in which water acts as acceptor.*
+    Darray Nww_don_; ///< Number of water-water hbond, in which water acts as donor.*
+    Darray Nww_acc_; ///< Number of water-water hbond, in which water acts as acceptor.*
+
+    AtomMask AcceptorMask_; /// Acceptor from solute F/O/N
+    AtomMask Mask_;  /// All atom in the system
+    AtomMask SolventDonorMask_; /// water residues
+    AtomMask SolventAcceptorMask_; /// oxgen atoms in water molecules
+
+    
+    Sarray Both_;         ///< Array of donor sites that can also be acceptors, will be apppended with donor-only solute atom after bothEnd_
+    Iarray Acceptor_;     ///< Array of acceptor-only solute atom indices
+    Sarray SolventSites_; ///< Array of solvent donor/acceptor sites
+    
+    // gemotric criteria for h bond, same as in Action_HydrogenBond
+    double dcut2_; // the distance of A and D atom cutoff squared for Hbod, default 3 Angstrom.
+    double acut_;  // the angle cutoff for A-H-D, default 135 degree
+    unsigned int bothEnd_;   ///< Index in Both_ where donor-only sites begin
+    
+    ///-----------------------------------------
+
+
     // PME energy terms
     Darray E_pme_;     ///< Total nonbond interaction energy(VDW + electrostatic) calculated by PME for water TODO grid?
     Darray U_E_pme_;   ///< Total nonbond interaction energy(VDW + Elec) calculated by PME for solute TODO grid?
@@ -199,3 +250,25 @@ class Action_GIST : public Action {
     bool skipS_;               ///< If true does not calculate entropy
 };
 #endif
+class Action_GIST::Site {
+  public:
+    Site() : idx_(-1) {}
+    /// Solute site - heavy atom, hydrogen atom
+    Site(int d, int h) : hlist_(1,h), idx_(d) {}
+    /// Solute site - heavy atom, list of hydrogen atoms
+    Site(int d, Iarray const& H) : hlist_(H), idx_(d) {}
+    /// \return heavy atom index
+    int Idx() const { return idx_; }
+    /// \return number of hydrogen indices
+    unsigned int n_hydrogens()      const { return hlist_.size(); }
+    /// \return true if site is an ion (D atom == H atom)
+    bool IsIon() const { return (hlist_.size()==1 && hlist_[0] == idx_); }
+    /// \return iterator to beginning of hydrogen indices
+    Iarray::const_iterator Hbegin() const { return hlist_.begin(); }
+    /// \return iterator to end of hydrogen indices
+    Iarray::const_iterator Hend()   const { return hlist_.end(); }
+  private:
+    Iarray hlist_; ///< List of hydrogen indices
+    int idx_;      ///< Heavy atom index
+};
+

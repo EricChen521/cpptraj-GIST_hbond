@@ -9,6 +9,7 @@
 #include "ProgressBar.h"
 #include "StringRoutines.h"
 #include "DistRoutines.h"
+#include "TorsionRoutines.h" // calcAngle
 #ifdef _OPENMP
 # include <omp.h>
 #endif
@@ -40,6 +41,12 @@ Action_GIST::Action_GIST() :
   gH_(0),
   Esw_(0),
   Eww_(0),
+  sw_Acc_(0),
+  sw_Don_(0),
+  ww_Acc_(0),
+  ww_Don_(0),
+  dcut2_(0),
+  acut_(0),
   dTStrans_(0),
   dTSorient_(0),
   dTSsix_(0),
@@ -135,6 +142,10 @@ Action::RetType Action_GIST::Init(ArgList& actionArgs, ActionInit& init, int deb
   DataFile* file_dipolex = init.DFL().AddDataFile(prefix_ + "-dipolex-dens" + ext);
   DataFile* file_dipoley = init.DFL().AddDataFile(prefix_ + "-dipoley-dens" + ext);
   DataFile* file_dipolez = init.DFL().AddDataFile(prefix_ + "-dipolez-dens" + ext);
+  DataFile* file_Nsw_A = init.DFL().AddDataFile(prefix_ + "-Nsw_acceptor" +ext);
+  DataFile* file_Nsw_D = init.DFL().AddDataFile(prefix_ + "-Nsw_donor"+ext);
+  DataFile* file_Nww_A = init.DFL().AddDataFile(prefix_ +"-Nww_acceptor" + ext);
+  DataFile* file_Nww_D = init.DFL().AddDataFile(prefix_ +"-Nww_donor" + ext);
   // Output format keywords
   std::string floatfmt = actionArgs.GetStringKey("floatfmt");
   if (!floatfmt.empty()) {
@@ -159,6 +170,25 @@ Action::RetType Action_GIST::Init(ArgList& actionArgs, ActionInit& init, int deb
   imageOpt_.InitImaging( !(actionArgs.hasKey("noimage")), actionArgs.hasKey("nonortho") );
   doOrder_ = actionArgs.hasKey("doorder");
   doEij_ = actionArgs.hasKey("doeij");
+
+  /// key word for hbond analysis
+  acut_ = actionArgs.getKeyDouble("angle",135.0);
+  double dcut;  
+  dcut= actionArgs.getKeyDouble("dist",3.0);
+  dcut2_=dcut * dcut;
+
+  SolventDonorMask_.SetMaskString(":WAT");
+  SolventAcceptorMask_.SetMaskString(":WAT@O");
+  Mask_.SetMaskString(":*");
+  AcceptorMask_.SetMaskString(":*");
+  //if (Mask_.SetMaskString(actionArgs.GetMaskNext())) return Action::ERR;
+  //if (AcceptorMask_.Set)
+
+
+
+
+  
+
 #ifdef CUDA
   if (this->doEij_) {
     mprinterr("Error: 'doeij' cannot be specified when using CUDA.\n");
@@ -270,9 +300,17 @@ Action::RetType Action_GIST::Init(ArgList& actionArgs, ActionInit& init, int deb
   dipoley_ = (DataSet_3D*)init.DSL().AddSet(DataSet::GRID_DBL, MetaData(dsname, "dipoley"));
   dipolez_ = (DataSet_3D*)init.DSL().AddSet(DataSet::GRID_DBL, MetaData(dsname, "dipolez"));
 
+  /// add hbond data for each voxel
+
+  sw_Don_ = (DataSet_3D*)init.DSL().AddSet(DataSet::GRID_FLT, MetaData(dsname, "Nsw_Donor"));
+  sw_Acc_ = (DataSet_3D*)init.DSL().AddSet(DataSet::GRID_FLT, MetaData(dsname, "Nsw_Acceptor"));
+  ww_Don_ = (DataSet_3D*)init.DSL().AddSet(DataSet::GRID_FLT, MetaData(dsname, "Nww_Donor"));
+  ww_Acc_ = (DataSet_3D*)init.DSL().AddSet(DataSet::GRID_FLT, MetaData(dsname, "Nww_Acceptor"));
+
+
   if (gO_==0 || gH_==0 || Esw_==0 || Eww_==0 || dTStrans_==0 || dTSorient_==0 ||
       dTSsix_==0 || neighbor_norm_==0 || dipole_==0 || order_norm_==0 ||
-      dipolex_==0 || dipoley_==0 || dipolez_==0)
+      dipolex_==0 || dipoley_==0 || dipolez_==0 || sw_Don_==0 || sw_Acc_==0 || ww_Don_==0 || ww_Acc_ == 0)
     return Action::ERR;
 
   if (usePme_) {
@@ -304,6 +342,11 @@ Action::RetType Action_GIST::Init(ArgList& actionArgs, ActionInit& init, int deb
   dipoley_->Allocate_N_C_D(nx, ny, nz, gridcntr_, v_spacing);
   dipolez_->Allocate_N_C_D(nx, ny, nz, gridcntr_, v_spacing);
 
+  sw_Don_->Allocate_N_C_D(nx, ny, nz, gridcntr_, v_spacing);
+  sw_Acc_->Allocate_N_C_D(nx, ny, nz, gridcntr_, v_spacing);
+  ww_Don_->Allocate_N_C_D(nx, ny, nz, gridcntr_, v_spacing);
+  ww_Acc_->Allocate_N_C_D(nx, ny, nz, gridcntr_, v_spacing);
+
   if (usePme_) {
     PME_->Allocate_N_C_D(nx,ny,nz,gridcntr_,v_spacing);
     U_PME_->Allocate_N_C_D(nx,ny,nz,gridcntr_,v_spacing);
@@ -330,6 +373,11 @@ Action::RetType Action_GIST::Init(ArgList& actionArgs, ActionInit& init, int deb
   file_dipolex->AddDataSet( dipolex_ );
   file_dipoley->AddDataSet( dipoley_ );
   file_dipolez->AddDataSet( dipolez_ );
+  file_Nsw_A->AddDataSet(sw_Acc_ );
+  file_Nsw_D->AddDataSet(sw_Don_);
+  file_Nww_A->AddDataSet(ww_Acc_);
+  file_Nww_D->AddDataSet(ww_Don_);
+  
   if (usePme_) {
     file_energy_pme->AddDataSet(PME_);
     file_U_energy_pme->AddDataSet(U_PME_);
@@ -343,6 +391,12 @@ Action::RetType Action_GIST::Init(ArgList& actionArgs, ActionInit& init, int deb
   N_hydrogens_.assign( MAX_GRID_PT_, 0 );
   voxel_xyz_.resize( MAX_GRID_PT_ ); // [] = X Y Z
   voxel_Q_.resize( MAX_GRID_PT_ ); // [] = W4 X4 Y4 Z4
+
+  Nsw_don_.assign(MAX_GRID_PT_,0);
+  Nsw_acc_.assign(MAX_GRID_PT_,0 );
+  Nww_don_.assign(MAX_GRID_PT_,0);
+  Nww_acc_.assign(MAX_GRID_PT_,0);
+
 
   numthreads_ = 1;
 # ifdef _OPENMP
@@ -475,6 +529,7 @@ static inline bool NotEqual(double v1, double v2) { return ( fabs(v1 - v2) > Con
 
 /** Set up GIST action. */
 Action::RetType Action_GIST::Setup(ActionSetup& setup) {
+  mprintf("entering gist setup \n");
   gist_setup_.Start();
   CurrentParm_ = setup.TopAddress();
   // We need box info
@@ -487,6 +542,200 @@ Action::RetType Action_GIST::Setup(ActionSetup& setup) {
   this->numberAtoms_ = setup.Top().Natom();
   this->solvent_ = new bool[this->numberAtoms_];
   #endif
+
+  // --- initianize Hbond analysis
+  //mprintf("total atom number [%i] \n", setup.Top().Natom());
+
+  //Mask_ = AtomMask(0, setup.Top().Natom());
+  
+
+  //mprintf("convert Mask_ to char [%s]", Mask_.ConvertToCharMask());
+
+ 
+
+  mprintf("Mask_ is [%s], number of atom in Mask_ is [%i] \n", Mask_.MaskString(), Mask_.NmaskAtoms());
+  setup.Top().SetupIntegerMask( Mask_ );   //!!! problem is here!!!!
+  mprintf("Second Mask_ is [%s], number of atom in Mask_ is [%i] \n", Mask_.MaskString(), Mask_.NmaskAtoms());
+
+
+  /**if ( setup.Top().SetupIntegerMask( Mask_ ) ) return Action::ERR;
+  Mask_.MaskInfo();
+  if ( Mask_.None() ) {
+      mprintf("Warning: Mask has no atoms.\n");
+  }
+  **/
+  AcceptorMask_.ResetMask();
+  mprintf("solute residue mask [%s] \n", Mask_.MaskString());
+  for (AtomMask::const_iterator at = Mask_.begin(); at != Mask_.end(); ++at) {
+    //mprintf("looping");
+      // Since an acceptor mask was not specified ignore solvent.
+    int molnum = setup.Top()[*at].MolNum();
+    
+    if (!setup.Top().Mol(molnum).IsSolvent() && IsFON( setup.Top()[*at] ))
+    {
+      //mprintf("find");
+      AcceptorMask_.AddSelectedAtom( *at );
+      //mprintf("Acceptor mask atom number [%s] \n", AcceptorMask_.NmaskAtoms());
+    }
+
+    AcceptorMask_.SetNatoms( Mask_.NmaskAtoms() );
+    
+  }
+
+  if ( AcceptorMask_.None() ) {
+      mprintf("Warning: AcceptorMask_ has no atoms.\n");
+  }
+  
+  
+  mprintf("Acceptor mask for solute atoms [%s] \n", AcceptorMask_.MaskString());
+
+
+
+  
+
+  
+
+
+  Both_.clear();
+  Acceptor_.clear();
+  SolventSites_.clear(); 
+
+  // --------SOLUTE DONOR/ACCEPTOR SITE SETUP-------
+
+  Sarray donorOnly;
+  // No specified donor mask; search generic mask.
+  int lastAcceptor = -1;
+  if (!AcceptorMask_.None())
+  lastAcceptor = AcceptorMask_.back();
+  int maxAtom = std::max( lastAcceptor, Mask_.back() ) + 1;
+  AtomMask::const_iterator a_atom = AcceptorMask_.begin();
+  AtomMask::const_iterator d_atom = Mask_.begin();
+  bool isDonor, isAcceptor;
+  for (int at = 0; at != maxAtom; at++)
+  {
+    // Since an acceptor mask was not specified ignore solvent.
+    Atom const& atom = setup.Top()[at];
+    int molnum = atom.MolNum();
+    if (!setup.Top().Mol(molnum).IsSolvent())
+    {
+      Iarray Hatoms;
+      isDonor = false;
+      isAcceptor = false;
+      if ( d_atom != Mask_.end() && *d_atom == at) {
+        ++d_atom;
+        ///-> Check if the FON atom are covalently bonded to hydrogen to determine the atom is donor_only, acceptor_only or Both
+        if ( IsFON( atom ) ) {              
+          for (Atom::bond_iterator H_at = atom.bondbegin();
+                                     H_at != atom.bondend(); ++H_at)
+            if (setup.Top()[*H_at].Element() == Atom::HYDROGEN)
+              Hatoms.push_back( *H_at );
+          isDonor = !Hatoms.empty();
+        }
+        }
+      if ( a_atom != AcceptorMask_.end() && *a_atom == at ) {
+        isAcceptor = true;
+        ++a_atom;
+      }
+      if (isDonor && isAcceptor)
+      {
+        Both_.push_back( Site(at, Hatoms) );
+        //mprintf("h atom number %i for solute atom %s ,with idx: %i \n", Hatoms.size(),atom.c_str(),at);
+
+      }
+
+      else if (isDonor)
+        donorOnly.push_back( Site(at, Hatoms) );
+      else if (isAcceptor)
+        Acceptor_.push_back( at );
+    }
+  }
+  
+  // Place donor-only sites at the end of Both_
+  bothEnd_ = Both_.size();
+  for (Sarray::const_iterator site = donorOnly.begin(); site != donorOnly.end(); ++site)
+    Both_.push_back( *site );
+
+  // Print solute site stats
+  mprintf("\tAcceptor-only solute atom#: %zu\n", Acceptor_.size());
+  mprintf("\tDonor/acceptor solute sites#: %u\n", bothEnd_);
+  mprintf("\tDonor-on;y solute atoms#: %zu\n", (Both_.size()-bothEnd_));
+
+  Sarray::const_iterator END = Both_.begin() + bothEnd_;
+  
+  
+  // number of hygrogen atoms in solute
+  unsigned int hcount = 0;
+  for (Sarray::const_iterator si = Both_.begin(); si != END; ++si)
+  {
+    //mprintf("[%i] hydrogen in this solute site \n", si->n_hydrogens());
+    hcount += si->n_hydrogens();
+    
+  }
+  mprintf("\t%u solute hydrogens.\n", hcount);
+
+
+    //------- Solvent Site Setup--------------------
+    
+  int at_beg = 0;
+  int at_end = 0;
+  setup.Top().SetupIntegerMask( SolventDonorMask_ );
+  setup.Top().SetupIntegerMask( SolventAcceptorMask_ );
+  mprintf("\tWill search for hbonds between solute and solvent acceptors in [%s]\n",
+            SolventAcceptorMask_.MaskString());
+  
+  mprintf("\tWill search for hbonds between solute and solvent donors in [%s]\n",
+            SolventDonorMask_.MaskString());
+  
+  at_beg = std::min( SolventDonorMask_[0], SolventAcceptorMask_[0] );
+  at_end = std::max( SolventDonorMask_.back(), SolventAcceptorMask_.back() ) + 1;
+
+  AtomMask::const_iterator A_atom = SolventAcceptorMask_.begin();
+  AtomMask::const_iterator D_atom = SolventDonorMask_.begin();
+
+  for (int at = at_beg; at != at_end; at++)
+  {
+    Iarray Hatoms;
+    isDonor = false;
+    isAcceptor = false;
+    if ( D_atom != SolventDonorMask_.end() && *D_atom == at ) {
+        ++D_atom;
+        Atom const& atom = setup.Top()[at];
+        //mprintf("atom name is [%s] \n", atom.c_str());
+        if ( IsFON( atom ) ) {
+          for (Atom::bond_iterator H_at = atom.bondbegin();
+                                   H_at != atom.bondend(); ++H_at)
+            if (setup.Top()[*H_at].Element() == Atom::HYDROGEN)
+              Hatoms.push_back( *H_at );
+        } else if ( atom.Nbonds() == 0 ) {
+          // If no bonds to this atom assume it is an ion. Set the H atom
+          // to be the same as D atom; this will skip the angle calc.
+          Hatoms.push_back( at );
+        }
+        isDonor = !Hatoms.empty();
+      }
+      if ( A_atom != SolventAcceptorMask_.end() && *A_atom == at ) {
+        isAcceptor = true;
+        ++A_atom;
+      }
+      if (isDonor || isAcceptor)
+      {
+        SolventSites_.push_back( Site(at, Hatoms) );
+        //mprintf("h atom number %i for atom %s ,with idx: %i \n", Hatoms.size(),setup.Top()[at].c_str(),at);
+      }
+    }
+
+  hcount = 0;
+  unsigned int icount = 0;
+  mprintf("\tSolvent sites (%zu)\n", SolventSites_.size());
+  for (Sarray::const_iterator si = SolventSites_.begin(); si != SolventSites_.end(); ++si) {
+    if (si->IsIon())
+      icount++;
+    else
+      hcount += si->n_hydrogens();
+    }
+  mprintf("\t%u solvent hydrogens, %u ions.\n", hcount, icount);
+
+  
 
   // Initialize PME
   if (usePme_) {
@@ -679,10 +928,77 @@ Action::RetType Action_GIST::Setup(ActionSetup& setup) {
     return Action::ERR;
   }
 #endif
-
   gist_setup_.Stop();
   return Action::OK;
 }
+
+
+
+
+///define Hbonds function
+bool Action_GIST::EvalAngle( Site const& SiteD, const double* XYZD, int a_atom, const double* XYZA, Frame const& frmIn) // the Site D is the donor site
+{
+
+  // The two sites are close enough to hydrogen bond.
+  mprintf("Entering EvalAngle funtion \n");
+  int d_atom = SiteD.Idx();
+  // Determine if angle cutoff is satisfied
+
+  mprintf("site atom idx is [%i], with [%i] H atoms  \n", d_atom, SiteD.n_hydrogens());
+  
+  
+  for (Iarray::const_iterator h_atom = SiteD.Hbegin(); h_atom != SiteD.Hend(); ++h_atom) // loop over the hydrogen atoms in donor site
+  {
+    double angle = 0.0;
+    bool angleSatisfied = true;
+    //mprintf("iterate the hydorgen atoms bonded to [%i] heavey atom", SiteD.Idx());
+
+ 
+    // For ions, donor atom will be same as h atom so no angle needed.
+    if (d_atom != *h_atom) {
+      
+      angle = Angle(XYZA, frmIn.XYZ(*h_atom), XYZD, frmIn.BoxCrd());
+      //mprintf("site atom idx is [%i], with [%i] H atoms  \n", d_atom, SiteD.n_hydrogens());
+      //mprintf("the angle is [%g] \n", angle);
+      mprintf("the hydrogen atom in the donor site is [%i]\n", *h_atom);
+      angleSatisfied = !(angle < acut_);
+      if (angleSatisfied)
+      {
+        mprintf("EvalAngle funtion return true \n");
+      
+        return true;
+      }
+    }
+
+    
+  }
+  
+}
+
+//Define angle function to calcuate the angle or XA-H-XD for hbond analysis
+
+double Action_GIST::Angle(const double* XA, const double* XH, const double* XD, Box const& boxIn) const
+{
+  if (imageOpt_.ImagingType() == ImageOption::NO_IMAGE)
+    return (CalcAngle(XA, XH, XD));
+  else {
+    double angle;
+    Vec3 VH = Vec3(XH);
+    Vec3 H_A = MinImagedVec(VH, Vec3(XA), boxIn.UnitCell(), boxIn.FracCell());
+    Vec3 H_D = Vec3(XD) - VH;
+    double rha = H_A.Magnitude2();
+    double rhd = H_D.Magnitude2();
+    if (rha > Constants::SMALL && rhd > Constants::SMALL) {
+      angle = (H_A * H_D) / sqrt(rha * rhd);
+      if      (angle >  1.0) angle =  1.0;
+      else if (angle < -1.0) angle = -1.0;
+      angle = acos(angle);
+    } else
+      angle = 0.0;
+    return angle;
+  }
+}
+
 
 const Vec3 Action_GIST::x_lab_ = Vec3(1.0, 0.0, 0.0);
 const Vec3 Action_GIST::y_lab_ = Vec3(0.0, 1.0, 0.0);
@@ -769,6 +1085,160 @@ void Action_GIST::Ecalc(double rij2, double q1, double q2, NonbondType const& LJ
   double qiqj  = QFAC_ * q1 * q2;
          Eelec = qiqj / rij;
 }
+
+
+//Perform the hbond analysis and update the voxel-wise hbond data
+void Action_GIST::Hbond(Frame const& frameIn)
+{
+  mprintf("enter hbond function \n");
+
+  double* Nsw_don = &(Nsw_don_[0]);
+  double* Nsw_acc = &(Nsw_acc_[0]);
+  double* Nww_don = &(Nww_don_[0]);
+  double* Nww_acc = &(Nww_acc_[0]);
+  // Set up imaging info.
+
+
+
+ // Loop over all water site in grid and assign the hbond data to each voxel accordingly
+
+  int vidx;
+  int vidxend = (int)SolventSites_.size();
+  
+
+
+  for (vidx = 0; vidx < vidxend; vidx++)
+    {
+      // the voxel index of this water site
+      Site const& Vsite = SolventSites_[vidx];
+      int v_voxel = atom_voxel_[Vsite.Idx()];
+       
+      //perform the hbond analysis only when the oxygen of the solvent site is in GIST grid 
+      if (v_voxel >=0)
+      {
+
+        const double* VXYZ = frameIn.XYZ( Vsite.Idx() );
+
+        mprintf("calculate hbond on solvent site [%i] \n", Vsite.Idx());
+      
+        
+        // Loop over solute sites that can be both donor and acceptor
+        for (unsigned int sidx = 0; sidx < bothEnd_; sidx++)
+        {
+          
+        
+          const double* UXYZ = frameIn.XYZ( Both_[sidx].Idx() );
+          double dist2 = DIST2( imageOpt_.ImagingType(), VXYZ, UXYZ, frameIn.BoxCrd() );
+          if ( !(dist2 > dcut2_) )
+          {
+            mprintf("loop over solute A&D \n");
+            // Solvent site donor, solute site acceptor
+            if(EvalAngle(Vsite, VXYZ, Both_[sidx].Idx(), UXYZ, frameIn))
+            {
+              mprintf("Nsw_don plus 1 \n");
+              Nsw_don[v_voxel] +=1; 
+
+            }
+            // Solvent site acceptor, solute site donor
+            if(EvalAngle(Both_[sidx], UXYZ, Vsite.Idx(), VXYZ, frameIn))
+            {
+              mprintf("Nsw_acc plus 1 \n");
+              Nsw_acc[v_voxel] +=1;
+            }
+          }
+        }
+        //Loop over solute sites that are donor only
+        
+        mprintf("looping over solute donor only \n");
+        for (unsigned int sidx = bothEnd_; sidx < Both_.size(); sidx++)
+        {
+          
+          const double* UXYZ = frameIn.XYZ( Both_[sidx].Idx() );
+          double dist2 = DIST2( imageOpt_.ImagingType(), VXYZ, UXYZ, frameIn.BoxCrd() );
+          if ( !(dist2 > dcut2_) and (EvalAngle(Both_[sidx], UXYZ, Vsite.Idx(), VXYZ, frameIn)))
+          // Solvent site acceptor, solute site donor
+          { 
+            mprintf("Nsw_acc plus 1 \n");
+            Nsw_acc[v_voxel] +=1;
+          }
+        }
+        // Loop over solute sites that are acceptor only
+        mprintf("looping over solute acceptor only \n");
+        for (Iarray::const_iterator a_atom = Acceptor_.begin(); a_atom != Acceptor_.end(); ++a_atom)
+        {
+          const double* UXYZ = frameIn.XYZ( *a_atom );
+          double dist2 = DIST2( imageOpt_.ImagingType(), VXYZ, UXYZ, frameIn.BoxCrd() );
+          if ( !(dist2 > dcut2_) and EvalAngle(Vsite, VXYZ, *a_atom, UXYZ, frameIn))
+          // Solvent site donor, solute site acceptor
+          {
+            mprintf("Nsw_don plus 1 \n");
+            Nsw_don[v_voxel] +=1;
+          }
+        } // END loop over solute sites
+        
+
+        // Loop over other solvent site
+        mprintf("looping over other solvent sites \n");
+        
+        
+        for (int V1_idx = vidx + 1; V1_idx < vidxend; V1_idx++)
+        {
+          
+          Site const& V1_Site = SolventSites_[V1_idx];
+          const double* V1_XYZ = frameIn.XYZ( V1_Site.Idx() );
+          int V1_voxel = atom_voxel_[V1_Site.Idx()]; // the voxel index of V1
+          mprintf("second water site V1_Site [%i] \n", V1_Site.Idx());
+
+          double dist2 = DIST2( imageOpt_.ImagingType(), VXYZ, V1_XYZ, frameIn.BoxCrd() );
+          //mprintf("haha");
+
+          
+        
+          if ( !(dist2 > dcut2_) )
+          {
+            mprintf("dist met \n");
+            // VSite is donor, V1_Site is acceptor
+            
+            
+            if (EvalAngle(Vsite,VXYZ,V1_Site.Idx(),V1_XYZ,frameIn))  ///<--- this is the segment error
+            //if (true)
+            {
+              mprintf("first angle met \n");
+              
+              Nww_don[v_voxel] +=1;
+              if (V1_voxel >=0)
+              {
+                Nww_acc[V1_voxel] +=1;
+              }
+              
+            }
+            
+            mprintf("haha");
+            if (EvalAngle(V1_Site,V1_XYZ,Vsite.Idx(),VXYZ,frameIn))
+            //if (true)
+            {
+              mprintf("second angle met \n");
+              
+              if (V1_voxel >=0)
+              {
+                Nww_don[V1_voxel] +=1;
+              }
+              Nww_acc[v_voxel] +=1;
+              
+            }
+            
+          } 
+          
+                
+        }
+        mprintf("for this solvent, finished the looping for other solvent site \n");
+      }
+    } 
+}
+
+
+
+
 
 /** Calculate the energy between all solute/solvent atoms and solvent atoms
   * on the grid. This is done after the intial GIST calculations
@@ -1034,6 +1504,7 @@ void Action_GIST::Order(Frame const& frameIn) {
 
 /** GIST action */
 Action::RetType Action_GIST::DoAction(int frameNum, ActionFrame& frm) {
+  mprintf("enter doaction !!\n");
   gist_action_.Start();
   NFRAME_++;
   // TODO only !skipE?
@@ -1279,6 +1750,11 @@ Action::RetType Action_GIST::DoAction(int frameNum, ActionFrame& frm) {
   if (doOrder_) Order(frm.Frm());
   gist_order_.Stop();
 # endif
+  // Do Hbond analysis
+  mprintf("doing Hbond anaylsis: \n");
+
+  Hbond( frm.Frm());
+  mprintf("hbond done!!\n");
   // Do nonbond energy calc if not skipping energy
   gist_nonbond_.Start();
   if (!skipE_) {
@@ -1701,16 +2177,28 @@ void Action_GIST::Print() {
   DataSet_GridDbl& dipolex = static_cast<DataSet_GridDbl&>( *dipolex_ );
   DataSet_GridDbl& dipoley = static_cast<DataSet_GridDbl&>( *dipoley_ );
   DataSet_GridDbl& dipolez = static_cast<DataSet_GridDbl&>( *dipolez_ );
+
+  /// Compute average hbond acc, don data for 
+  DataSet_GridFlt& sw_Acc = static_cast<DataSet_GridFlt&>(*sw_Acc_);
+  DataSet_GridFlt& sw_Don = static_cast<DataSet_GridFlt&>(*sw_Don_);
+  DataSet_GridFlt& ww_Acc = static_cast<DataSet_GridFlt&>(*ww_Acc_);
+  DataSet_GridFlt& ww_Don = static_cast<DataSet_GridFlt&>(*ww_Don_);
+
   for (unsigned int gr_pt = 0; gr_pt < MAX_GRID_PT_; gr_pt++)
   {
     dipolex[gr_pt] /= (Constants::DEBYE_EA * NFRAME_ * Vvox);
     dipoley[gr_pt] /= (Constants::DEBYE_EA * NFRAME_ * Vvox);
     dipolez[gr_pt] /= (Constants::DEBYE_EA * NFRAME_ * Vvox);
+    sw_Acc[gr_pt] /= NFRAME_;
+    sw_Don[gr_pt] /= NFRAME_;
+    ww_Don[gr_pt] /= NFRAME_;
+    ww_Acc[gr_pt] /= NFRAME_;
     pol[gr_pt] = sqrt( dipolex[gr_pt]*dipolex[gr_pt] +
                        dipoley[gr_pt]*dipoley[gr_pt] +
                        dipolez[gr_pt]*dipolez[gr_pt] );
   }
 
+  
   // Write the GIST output file.
   // TODO: Make a data file format?
   if (datafile_ != 0) {
@@ -1747,6 +2235,10 @@ void Action_GIST::Print() {
           " " + fltFmt_.Fmt() + // neighbor_dens
           " " + fltFmt_.Fmt() + // neighbor_norm
           " " + fltFmt_.Fmt() + // qtet
+          " " + fltFmt_.Fmt() + // sw_Don
+          " " + fltFmt_.Fmt() + // sw_Acc
+          " " + fltFmt_.Fmt() + // ww_Don
+          " " + fltFmt_.Fmt() + // ww_Acc
           " \n";                // NEWLINE
     if (debug_ > 0) mprintf("DEBUG: Fmt='%s'\n", fmtstr.c_str());
     const char* gistOutputVersion;
@@ -1769,7 +2261,7 @@ void Action_GIST::Print() {
     if (usePme_)
       datafile_->Printf(" PME-dens(kcal/mol/A^3) PME-norm(kcal/mol)");
     datafile_->Printf(" Dipole_x-dens(D/A^3) Dipole_y-dens(D/A^3) Dipole_z-dens(D/A^3)"
-                      " Dipole-dens(D/A^3) neighbor-dens(1/A^3) neighbor-norm order-norm\n");
+                      " Dipole-dens(D/A^3) neighbor-dens(1/A^3) neighbor-norm order-norm Nsw_Don, Nsw_Acc, Nww_Don, Nww_Acc\n");
     // Loop over voxels
     ProgressBar O_progress( MAX_GRID_PT_ );
     for (unsigned int gr_pt = 0; gr_pt < MAX_GRID_PT_; gr_pt++) {
@@ -1789,7 +2281,7 @@ void Action_GIST::Print() {
                           Eww_dens[gr_pt], Eww_norm[gr_pt],
                           PME_dens[gr_pt], PME_norm[gr_pt],
                           dipolex[gr_pt], dipoley[gr_pt], dipolez[gr_pt],
-                          pol[gr_pt], neighbor_dens[gr_pt], neighbor_norm[gr_pt], qtet[gr_pt]);
+                          pol[gr_pt], neighbor_dens[gr_pt], neighbor_norm[gr_pt], qtet[gr_pt], sw_Don[gr_pt], sw_Acc[gr_pt], ww_Don[gr_pt], ww_Acc[gr_pt]);
       } else {
         datafile_->Printf(fmtstr.c_str(),
                           gr_pt, XYZ[0], XYZ[1], XYZ[2], N_waters_[gr_pt], gO[gr_pt], gH[gr_pt],
@@ -1799,7 +2291,7 @@ void Action_GIST::Print() {
                           Esw_dens[gr_pt], Esw_norm[gr_pt],
                           Eww_dens[gr_pt], Eww_norm[gr_pt],
                           dipolex[gr_pt], dipoley[gr_pt], dipolez[gr_pt],
-                          pol[gr_pt], neighbor_dens[gr_pt], neighbor_norm[gr_pt], qtet[gr_pt]);
+                          pol[gr_pt], neighbor_dens[gr_pt], neighbor_norm[gr_pt], qtet[gr_pt],sw_Don[gr_pt], sw_Acc[gr_pt], ww_Don[gr_pt], ww_Acc[gr_pt]);
       }
     } // END loop over voxels
   } // END datafile_ not null
