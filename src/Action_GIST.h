@@ -223,6 +223,7 @@ class Action_GIST : public Action {
     Timer gist_euler_;
     Timer gist_dipole_;
     Timer gist_order_;
+    Timer gist_hbond_; 
 
     Topology* CurrentParm_;    ///< Current topology, for energy calc.
     CpptrajFile* datafile_;    ///< GIST output
@@ -248,6 +249,7 @@ class Action_GIST : public Action {
     bool skipE_;               ///< If true skip the nonbond energy calc
     bool includeIons_;         ///< If true include ions in solute region.
     bool skipS_;               ///< If true does not calculate entropy
+    bool hbond_;               ///< If ture do the hbind analysis, defualt is false
 };
 #endif
 class Action_GIST::Site {
