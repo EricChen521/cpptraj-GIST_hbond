@@ -1421,12 +1421,78 @@ void Action_GIST::NonbondEnergy(Frame const& frameIn, Topology const& topIn)
             E_VV_VDW[a2_voxel] += Evdw;
             E_VV_Elec[a2_voxel] += Eelec;
             // Store water neighbor using only O-O distance
-            bool is_O_O = (a1IsO && atomIsSolventO_[a2]);
-            if (is_O_O && rij2 < NeighborCut2_){
+            bool is_O_O = (a1IsO && atomIsSolventO_[a2]);          
+            if (is_O_O && rij2 < NeighborCut2_)
+            {
               Neighbor[a2_voxel] += 1.0;
-              E_VV_neighbor[a2_voxel] += Evdw + Eelec; // update water-water energy per neighbor
+
+              mprintf("a1 oxygen: %i, a2 oxygen: %i, a2_voxel: %i \n", a1,a2,a2_voxel);
+        
+              //E_VV_neighbor[a2_voxel] += 0.5* (Evdw + Eelec); // add oxygen-oxygen enegy for water-water energy per neighbor
               //mprintf("qA1: %f, qA2: %f \n", qA1,topIn[ a2 ].Charge());
-              //mprintf("added E_VV_neighbor %f, with Evdw: %f, Eelec: %f in voxel ID: %i \n",(Evdw+Eelec),Evdw,Eelec, a2_voxel);
+              //mprintf("added E_VV_neighbor from o-o: %f, with Evdw: %f, Eelec: %f in voxel ID: %i \n",(Evdw+Eelec),Evdw,Eelec, a2_voxel);
+
+              for ( unsigned A1 = a1; A1 < a1 + nMolAtoms_; A1++) // loop over all atoms in residue that a1 belongs to
+              {
+                Vec3 XYZ_A1( frameIn.XYZ( A1 ) );  // Coord of H atom bonded to a1 atom
+                double q_A1 = topIn[ A1 ].Charge(); // Charge of atom1
+
+                std::vector<Vec3> vImages;
+                if (imageOpt_.ImagingType() == ImageOption::NONORTHO) 
+                {
+                   // Convert to frac coords
+                   Vec3 vFrac = frameIn.BoxCrd().FracCell() * XYZ_A1;
+                   // Wrap to primary unit cell
+                   vFrac[0] = vFrac[0] - floor(vFrac[0]);
+                   vFrac[1] = vFrac[1] - floor(vFrac[1]);
+                   vFrac[2] = vFrac[2] - floor(vFrac[2]);
+                   // Calculate all images of this atom
+                   vImages.reserve(27);
+                   for (int ix = -1; ix != 2; ix++)
+                    for (int iy = -1; iy != 2; iy++)
+                     for (int iz = -1; iz != 2; iz++)
+                      // Convert image back to Cartesian
+                      vImages.push_back( frameIn.BoxCrd().UnitCell().TransposeMult( vFrac + Vec3(ix,iy,iz) ) );
+                }
+
+                for (unsigned A2 =a2; A2 < a2 + nMolAtoms_; A2++) // loop over all atoms in residue that a2 belongs to
+                {
+                  
+                  Vec3 XYZ_A2( frameIn.XYZ( A2 ) );  // Coord of atom1
+                  double q_A2 = topIn[ A2].Charge();
+                  double rij2;
+                  if (imageOpt_.ImagingType() == ImageOption::NONORTHO) 
+                  {
+#                   ifdef GIST_USE_NONORTHO_DIST2
+                     rij2 = DIST2_ImageNonOrtho(A1_XYZ, A2_XYZ, frameIn.BoxCrd().UnitCell(), frameIn.BoxCrd().FracCell());
+#                   else
+                      rij2 = maxD_;
+                    for (std::vector<Vec3>::const_iterator vCart = vImages.begin();
+                                                     vCart != vImages.end(); ++vCart)
+                    {
+                      double x = (*vCart)[0] - XYZ_A2[0];
+                      double y = (*vCart)[1] - XYZ_A2[1];
+                      double z = (*vCart)[2] - XYZ_A2[2];
+                      rij2 = std::min(rij2, x*x + y*y + z*z);
+                    }
+#                   endif
+                  } else if (imageOpt_.ImagingType() == ImageOption::ORTHO)
+                      rij2 = DIST2_ImageOrtho( XYZ_A1, XYZ_A2, frameIn.BoxCrd() );
+                    else
+                      rij2 = DIST2_NoImage( XYZ_A1, XYZ_A2 );
+            
+                  // Calculate energy
+                  Ecalc( rij2, q_A1, q_A2, topIn.GetLJparam(A1, A2), Evdw, Eelec );
+
+                  E_VV_neighbor[a2_voxel] += 0.5* (Evdw + Eelec); // add to neighbor water-water energy to a2_voxel
+                  //mprintf("A1 atom: %i, A2 atom: %i, E_neigh: %f \n", A1, A2, 0.5*(Evdw+Eelec));
+
+                  if (a1_voxel !=OFF_GRID_)
+                  {
+                    E_VV_neighbor[a1_voxel] += 0.5* (Evdw + Eelec); // add to neighbor water-water energy to a1_voxel as well
+                  }
+                }
+              }
             }
             // If water atom1 was also on the grid update its energy as well.
             if ( a1_voxel != OFF_GRID_ ) {
@@ -1434,7 +1500,6 @@ void Action_GIST::NonbondEnergy(Frame const& frameIn, Topology const& topIn)
               E_VV_Elec[a1_voxel] += Eelec;
               if (is_O_O && rij2 < NeighborCut2_){
                 Neighbor[a1_voxel] += 1.0;
-                E_VV_neighbor[a1_voxel] += Evdw + Eelec; // update water-water energy per neighbor
               }
               if (doEij_) {
                 if (a1_voxel != a2_voxel) {
@@ -1448,7 +1513,6 @@ void Action_GIST::NonbondEnergy(Frame const& frameIn, Topology const& topIn)
                 }
               }
             }
-            //gist_nonbond_VV_.Stop();
           }
         }
       } // END a1 and a2 not in same molecule
@@ -1464,6 +1528,7 @@ void Action_GIST::NonbondEnergy(Frame const& frameIn, Topology const& topIn)
   }
 # endif
 }
+
 
 /** GIST order calculation. */
 void Action_GIST::Order(Frame const& frameIn) {
