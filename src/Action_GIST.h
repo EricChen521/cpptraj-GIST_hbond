@@ -49,7 +49,7 @@ class Action_GIST : public Action {
     void Order(Frame const&);
     void SumEVV();
     void CalcAvgVoxelEnergy_PME(double, DataSet_GridFlt&, DataSet_GridFlt&, Farray&) const;
-    void CalcAvgVoxelEnergy(double, DataSet_GridFlt&, DataSet_GridFlt&, DataSet_GridFlt&, Farray&, Farray&,
+    void CalcAvgVoxelEnergy(double, DataSet_GridFlt&, DataSet_GridFlt&, DataSet_GridFlt&, DataSet_GridFlt&, Farray&, Farray&,
                             DataSet_GridDbl&, DataSet_GridFlt&, Farray&);
 
     
@@ -131,6 +131,7 @@ class Action_GIST : public Action {
     DataSet_3D* dTSsix_;
     DataSet_3D* neighbor_norm_;
     DataSet_3D* Eww_neighbor_; ///< water-water energy per neighbor
+    DataSet_3D* Esw_neighbor_; ///< water-solute energy per solute neighbor
     DataSet_3D* dipole_; // pol
     // GIST double grid datasets
     DataSet_3D* order_norm_; // qtet
@@ -167,6 +168,7 @@ class Action_GIST : public Action {
 #   endif
 
     std::vector<Farray> neighbor_; ///< Number of water neighbors within 3.5 Ang.*
+    std::vector<Farray> s_neighbor_; ///< Number of solute atom neighbnor within 3.5 Ang.*
     
 #   ifdef _OPENMP
     std::vector<Farray> EIJ_EN_;   ///< Hold any interaction energies each frame.*
@@ -181,6 +183,7 @@ class Action_GIST : public Action {
     std::vector<Darray> E_VV_VDW_;  ///< Solvent-solvent van der Waals energy for each voxel.*
     std::vector<Darray> E_VV_Elec_; ///< Solvent-solvent electrostatic energy for each voxel.*
     std::vector<Darray> E_VV_neighbor_; /// average water-water energy per neighbor for each voxel.*
+    std::vector<Darray> E_UV_neighbor_; /// average solute-water energy per solute neighbor for each voxel.*
 
     //Add for hydrogen bond analysis-------
     Darray Nsw_don_; ///< Number of solute-water hbond, in which water acts as donor.*
